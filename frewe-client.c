@@ -62,6 +62,7 @@
  * 2015-03-25 Send UTC time to frewe-server
  * 2015-04-24 Handle lasttime as UTC
  * 2015-08-20 Don't write fhem.txt for older records
+ * 2016-01-16 Separate read interval for fhem.txt, run each 48 seconds for FHEM
 
  * TODO: Handle rain counter overflow
  */
@@ -81,7 +82,7 @@
 #include <openssl/md5.h>
 #include "http_fetcher.h"
 
-#define PROGRAM_VERSION "1.18"
+#define PROGRAM_VERSION "1.19"
 
 #define DEFAULT_VENDOR    0x1941
 #define DEFAULT_PRODUCT   0x8021
@@ -153,6 +154,7 @@ char *ws_type="WH1080";				// default to WH1080
 
 char ws_entry_size;
 int run_interval=0;			// in seconds, 0 means run once and exit, change it by -r option or RunInterval cfg
+int fhem_interval=48;
 int read_period;			// Minutes between each stored reading (set in the WS configuration)
 int altitude=0;				// default altitude is sea level in meter - change it by -A option or Altitude cfg
 uint16_t vendor=DEFAULT_VENDOR,product=DEFAULT_PRODUCT;
@@ -220,11 +222,12 @@ int main(int argc, char **argv)
 	int pos60, pos0h;
 	int data_count;
 	int last_age;
+	int read_weather,read_fhem;
 
 	uint16_t address,address0,address60,address0h;
 	long pause;
 	time_t starttime,curtime,lasttime;
-	struct timeval tact, tlast;
+	struct timeval tact, tlast, tlastfhem;
 	struct tm *tmptr, tm;
 	char *output;
 	
@@ -508,9 +511,12 @@ int main(int argc, char **argv)
 // Start main loop for run_interval repetitions
 
 		w.ok=w1.ok=0;
+		read_weather=read_fhem=1;
 
 		do
 		{
+
+// Start reading
 
 			rv=0;				// reset errors
 			startpos=endpos=position; 	// default
@@ -519,7 +525,11 @@ int main(int argc, char **argv)
 
 			time(&curtime);
 			tmptr=localtime(&curtime);
-			gettimeofday(&tlast, NULL);
+			if (read_weather)
+				gettimeofday(&tlast, NULL);
+			if (read_fhem)
+				gettimeofday(&tlastfhem, NULL);
+			
 
 // Get the current data count (records actually saved on ws)
 
@@ -537,7 +547,7 @@ int main(int argc, char **argv)
 
 // Get last time saved on frewe-server and calculate positions
 
-			if (rv==0 && frewe_server_url_lasttime!=NULL)
+			if (rv==0 && read_weather && frewe_server_url_lasttime!=NULL)
 			{
 				logger(LOG_DEBUG,"main","Getting lasttime from server URL: %s", frewe_server_url_lasttime);
 				rv=ws_submit(frewe_server_url_lasttime,&filebuf);
@@ -599,254 +609,254 @@ int main(int argc, char **argv)
 
 			if (rv==0)
 			{
-        			for (curpos=startpos;curpos<=endpos;curpos++)	// NB: data errors don't break this loop
-        			{
-        
-        				rv=ws_open(&dev,vendor,product,0);	// rv is reset here
-        
+    			for (curpos=startpos;curpos<=endpos;curpos++)	// NB: data errors don't break this loop
+    			{
+    
+    				rv=ws_open(&dev,vendor,product,0);	// rv is reset here
+    
 // Read record for the current position
-        
-        				address0=get_address(address,curpos);
-        				if (rv==0) rv=ws_read(dev,address0,buffer,sizeof(buffer));
-        
+    
+    				address0=get_address(address,curpos);
+    				if (rv==0) rv=ws_read(dev,address0,buffer,sizeof(buffer));
+    
 // Read record ~60 mins ago (if not existent take first available record)
-        
-        				if (rv==0)
-        				{	
-        					pos60 = curpos-round((float)(60-last_age)/read_period)-1;
-        					if (0-pos60>=data_count) pos60=1-data_count;
-       						address60=get_address(address,pos60);
-        				}
-        				if (rv==0) rv=ws_read(dev,address60,buffer60,sizeof(buffer60));
-        
+    
+    				if (rv==0)
+    				{	
+    					pos60 = curpos-round((float)(60-last_age)/read_period)-1;
+    					if (0-pos60>=data_count) pos60=1-data_count;
+   						address60=get_address(address,pos60);
+    				}
+    				if (rv==0) rv=ws_read(dev,address60,buffer60,sizeof(buffer60));
+    
 // Read record from ~0h of the curpos' day (if not existent take first available record)
 // The calculation is not accurate when changing daylight saving time
-        
-        				if (rv==0)
-        				{	
-        					pos0h = 0-round((float)(tmptr->tm_hour*60+tmptr->tm_min-last_age)/read_period)-1;
-        					while (curpos<pos0h) pos0h -= round((float)60*24/read_period);
-        					if (0-pos0h>=data_count) pos0h=1-data_count;
-       						address0h=get_address(address,pos0h);
-        				}
-        				if (rv==0) rv=ws_read(dev,address0h,buffer0h,sizeof(buffer0h));
-        
+    
+    				if (rv==0)
+    				{	
+    					pos0h = 0-round((float)(tmptr->tm_hour*60+tmptr->tm_min-last_age)/read_period)-1;
+    					while (curpos<pos0h) pos0h -= round((float)60*24/read_period);
+    					if (0-pos0h>=data_count) pos0h=1-data_count;
+   						address0h=get_address(address,pos0h);
+    				}
+    				if (rv==0) rv=ws_read(dev,address0h,buffer0h,sizeof(buffer0h));
+    
 // Close USB device anyway
-        
-        				ws_close(&dev);
-        
+    
+    				ws_close(&dev);
+    
 // Parse the buffers for the weather values into w
-        
-        				if (rv==0) 
-        				{	rv=ws_parse(buffer,buffer60,buffer0h,curtime,curpos,last_age);
-        					if (rv==2)
-        					{	logger(LOG_ERROR,"main","ws_parse reported negative rain, position=%d, address0=0x%x, address60=0x%x, address0h=0x%x,",curpos,address0,address60,address0h);
-        						continue;
-        					}
-        					
-        					if (rv!=0)
-        					{	logger(LOG_WARNING,"main","ws_parse reported an error, the record will be ignored");
-        						continue;
-        					}
-        				}
-        
+    
+    				if (rv==0) 
+    				{	rv=ws_parse(buffer,buffer60,buffer0h,curtime,curpos,last_age);
+    					if (rv==2)
+    					{	logger(LOG_ERROR,"main","ws_parse reported negative rain, position=%d, address0=0x%x, address60=0x%x, address0h=0x%x,",curpos,address0,address60,address0h);
+    						continue;
+    					}
+    					
+    					if (rv!=0)
+    					{	logger(LOG_WARNING,"main","ws_parse reported an error, the record will be ignored");
+    						continue;
+    					}
+    				}
+    
 // Format and print data
-        
-        				if (rv==0 && format!=NULL)
-        				{	output=malloc(strlen(format)+100);
-        					if (!output)
-        					{	logger(LOG_ERROR,"main","Could not allocate %u bytes for output",strlen(format)+100);
-        						rv=1;
-        					}
-        					else
-        					{	rv=ws_format(format,output,0,"","",errorstring);
-        						if (rv!=0)
-        							logger(LOG_ERROR,"main","Error formatting data return code %d", rv);
-        						else
-        						{	printf("%s",output);
-        							fflush(stdout);
-        						}
-        						free(output);
-        					}
-        				}
+    
+    				if (rv==0 && format!=NULL)
+    				{	output=malloc(strlen(format)+100);
+    					if (!output)
+    					{	logger(LOG_ERROR,"main","Could not allocate %u bytes for output",strlen(format)+100);
+    						rv=1;
+    					}
+    					else
+    					{	rv=ws_format(format,output,0,"","",errorstring);
+    						if (rv!=0)
+    							logger(LOG_ERROR,"main","Error formatting data return code %d", rv);
+    						else
+    						{	printf("%s",output);
+    							fflush(stdout);
+    						}
+    						free(output);
+    					}
+    				}
 
-     
+ 
 // Format and submit data to frewe-server
-        
-        				if (rv==0 && frewe_server_url_submit!=NULL) 
-        				{	output=malloc(strlen(frewe_server_url_submit)+100);
-        					if (!output)
-        					{	logger(LOG_ERROR,"main","Could not allocate %u bytes for output",strlen(frewe_server_url_submit)+100);
-        						rv=1;
-        					}
-        					else
-        					{	rv=ws_format(frewe_server_url_submit,output,1,"","","");
-        						if (rv!=0) 
-        							logger(LOG_ERROR,"main","Error formatting data return code %d", rv);
-        						else
-        						{	logger(LOG_DEBUG,"main","Submitting to server URL: %s", output);
-        							rv=ws_submit(output,&filebuf);
+    
+    				if (rv==0 && read_weather && frewe_server_url_submit!=NULL) 
+    				{	output=malloc(strlen(frewe_server_url_submit)+100);
+    					if (!output)
+    					{	logger(LOG_ERROR,"main","Could not allocate %u bytes for output",strlen(frewe_server_url_submit)+100);
+    						rv=1;
+    					}
+    					else
+    					{	rv=ws_format(frewe_server_url_submit,output,1,"","","");
+    						if (rv!=0) 
+    							logger(LOG_ERROR,"main","Error formatting data return code %d", rv);
+    						else
+    						{	logger(LOG_DEBUG,"main","Submitting to server URL: %s", output);
+    							rv=ws_submit(output,&filebuf);
 
-		        					if (rv!=0 || strncasecmp(filebuf,"OK",2)!=0) 
-		        					{	logger(LOG_ERROR,"main","Error submitting to frewe-server, check FreweServerURL");
-		        						rv=0; // Ignore this error, don's stop
+        					if (rv!=0 || strncasecmp(filebuf,"OK",2)!=0) 
+        					{	logger(LOG_ERROR,"main","Error submitting to frewe-server, check FreweServerURL");
+        						rv=0; // Ignore this error, don's stop
 
 /*
-		        						if (curpos<endpos)
-		        						{ 	curpos=endpos-1; // Stop processing other stuff and goto last position if frewe-server fails, TODO: good so?
-		        							free(output);
-		        							continue;
-		        						}
+        						if (curpos<endpos)
+        						{ 	curpos=endpos-1; // Stop processing other stuff and goto last position if frewe-server fails, TODO: good so?
+        							free(output);
+        							continue;
+        						}
 */		        						
-		        					}
-		        				}
-
-        						free(output);
         					}
-       					
         				}
+
+    						free(output);
+    					}
+   					
+    				}
 
 // Check alarm thresholds and make alarm actions (Get/Run)
 // NB: Alarms will be done even when resending data
 
-					if (w.ok && w1.ok && rv==0)
-					{
-						for(i=0;i<alm_counter;i++)
-						{	if (alm[i].url==NULL && alm[i].run==NULL && alm[i].email==NULL) continue;
-							
-							if(strcasecmp(alm[i].type, "HighOutdoorTemp")==0 && w.tempout>=alm[i].threshold && w1.tempout<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowOutdoorTemp")==0 && w.tempout<=alm[i].threshold && w1.tempout>alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "HighWindchillTemp")==0 && w.tempchill>=alm[i].threshold && w1.tempchill<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowWindchillTemp")==0 && w.tempchill<=alm[i].threshold && w1.tempchill>alm[i].threshold) ws_alarm (&w,&alm[i]);							
-							if(strcasecmp(alm[i].type, "HighDewTemp")==0 && w.tempdew>=alm[i].threshold && w1.tempdew<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowDewTemp")==0 && w.tempdew<=alm[i].threshold && w1.tempdew>alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "HighIndoorTemp")==0 && w.tempin>=alm[i].threshold && w1.tempin<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowIndoorTemp")==0 && w.tempin<=alm[i].threshold && w1.tempin>alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "HighOutdoorHumidity")==0 && w.humout>=alm[i].threshold && w1.humout<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowOutdoorHumidity")==0 && w.humout<=alm[i].threshold && w1.humout>alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "HighIndoorHumidity")==0 && w.humin>=alm[i].threshold && w1.humin<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowIndoorHumidity")==0 && w.humin<=alm[i].threshold && w1.humin>alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "HighRelPressure")==0 && w.pressrel>=alm[i].threshold && w1.pressrel<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowRelPressure")==0 && w.pressrel<=alm[i].threshold && w1.pressrel>alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "HighWind")==0 && w.windspeed>=alm[i].threshold && w1.windspeed<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowWind")==0 && w.windspeed<=alm[i].threshold && w1.windspeed>alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "HighGust")==0 && w.windgust>=alm[i].threshold && w1.windgust<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowGust")==0 && w.windgust<=alm[i].threshold && w1.windgust>alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "HighRainHour")==0 && w.rainhour>=alm[i].threshold && w1.rainhour<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowRainHour")==0 && w.rainhour<=alm[i].threshold && w1.rainhour>alm[i].threshold) ws_alarm (&w,&alm[i]);						
-							if(strcasecmp(alm[i].type, "HighRainDay")==0 && w.rainday>=alm[i].threshold && w1.rainday<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowRainDay")==0 && w.rainday<=alm[i].threshold && w1.rainday>alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "HighIllumination")==0 && w.illu>=alm[i].threshold && w1.illu<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowIllumination")==0 && w.illu<=alm[i].threshold && w1.illu>alm[i].threshold) ws_alarm (&w,&alm[i]);						
-							if(strcasecmp(alm[i].type, "HighUV")==0 && w.uv>=alm[i].threshold && w1.uv<alm[i].threshold) ws_alarm (&w,&alm[i]);
-							if(strcasecmp(alm[i].type, "LowUV")==0 && w.uv<=alm[i].threshold && w1.uv>alm[i].threshold) ws_alarm (&w,&alm[i]);
+						if (w.ok && w1.ok && rv==0)
+						{
+							for(i=0;i<alm_counter;i++)
+							{	if (alm[i].url==NULL && alm[i].run==NULL && alm[i].email==NULL) continue;
+								
+								if(strcasecmp(alm[i].type, "HighOutdoorTemp")==0 && w.tempout>=alm[i].threshold && w1.tempout<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowOutdoorTemp")==0 && w.tempout<=alm[i].threshold && w1.tempout>alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "HighWindchillTemp")==0 && w.tempchill>=alm[i].threshold && w1.tempchill<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowWindchillTemp")==0 && w.tempchill<=alm[i].threshold && w1.tempchill>alm[i].threshold) ws_alarm (&w,&alm[i]);							
+								if(strcasecmp(alm[i].type, "HighDewTemp")==0 && w.tempdew>=alm[i].threshold && w1.tempdew<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowDewTemp")==0 && w.tempdew<=alm[i].threshold && w1.tempdew>alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "HighIndoorTemp")==0 && w.tempin>=alm[i].threshold && w1.tempin<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowIndoorTemp")==0 && w.tempin<=alm[i].threshold && w1.tempin>alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "HighOutdoorHumidity")==0 && w.humout>=alm[i].threshold && w1.humout<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowOutdoorHumidity")==0 && w.humout<=alm[i].threshold && w1.humout>alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "HighIndoorHumidity")==0 && w.humin>=alm[i].threshold && w1.humin<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowIndoorHumidity")==0 && w.humin<=alm[i].threshold && w1.humin>alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "HighRelPressure")==0 && w.pressrel>=alm[i].threshold && w1.pressrel<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowRelPressure")==0 && w.pressrel<=alm[i].threshold && w1.pressrel>alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "HighWind")==0 && w.windspeed>=alm[i].threshold && w1.windspeed<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowWind")==0 && w.windspeed<=alm[i].threshold && w1.windspeed>alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "HighGust")==0 && w.windgust>=alm[i].threshold && w1.windgust<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowGust")==0 && w.windgust<=alm[i].threshold && w1.windgust>alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "HighRainHour")==0 && w.rainhour>=alm[i].threshold && w1.rainhour<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowRainHour")==0 && w.rainhour<=alm[i].threshold && w1.rainhour>alm[i].threshold) ws_alarm (&w,&alm[i]);						
+								if(strcasecmp(alm[i].type, "HighRainDay")==0 && w.rainday>=alm[i].threshold && w1.rainday<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowRainDay")==0 && w.rainday<=alm[i].threshold && w1.rainday>alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "HighIllumination")==0 && w.illu>=alm[i].threshold && w1.illu<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowIllumination")==0 && w.illu<=alm[i].threshold && w1.illu>alm[i].threshold) ws_alarm (&w,&alm[i]);						
+								if(strcasecmp(alm[i].type, "HighUV")==0 && w.uv>=alm[i].threshold && w1.uv<alm[i].threshold) ws_alarm (&w,&alm[i]);
+								if(strcasecmp(alm[i].type, "LowUV")==0 && w.uv<=alm[i].threshold && w1.uv>alm[i].threshold) ws_alarm (&w,&alm[i]);
+							}
 						}
-					}
 
 // Format and submit data to known weather services
-        
-	        			for (i=0;i<sizeof(ws)/sizeof(ws[0]) && rv==0;i++)
-	        			{	
-	        				if (ws[i].user==NULL || ws[i].pass==NULL) continue;	// Skip if service is not in use
-	        					
-	        				if (!ws[i].resend && curpos!=endpos) continue;		// Skip if service doesn't support data resend
-	        				
-        				 	l = strlen(ws[i].url)+100+strlen(ws[i].user);
-        					if (ws[i].md5==1) l+=MD5_DIGEST_LENGTH; else l+=strlen(ws[i].pass);
-        					
-        					output=malloc(l);
-        					if (!output)
-        					{	logger(LOG_ERROR,"main","Could not allocate %d bytes for output",l);
-        						rv=1;
-        					}
-        					else
-        					{
-        						if (ws[i].md5==1)
-        						{	MD5(ws[i].pass, strlen(ws[i].pass), md5);
-        							sprintf(md5str, "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x", md5[0],md5[1],md5[2],md5[3],md5[4],md5[5],md5[6],md5[7], md5[8],md5[9],md5[10],md5[11],md5[12],md5[13],md5[14],md5[15]);
-        						}
-        
-        						rv=ws_format(ws[i].url,output,1,ws[i].user,ws[i].md5==1? md5str : ws[i].pass, ws[i].error);
-        						if (rv!=0) 
-        							logger(LOG_ERROR,"main","Error formatting data return code %d", rv);
-        						else
-        						{	logger(LOG_DEBUG,"main","Submitting to server URL: %s", output);
-        							rv=ws_submit(output,&filebuf); 
-        							// NB: Error in ws_submit will be ignored, just put warning, don't stop
-        							if (rv!=0) 
-        							{	logger(LOG_WARNING,"main","Submitting to server %s failed", output);
-        								rv=0;
-        							}
-        						}
-        						free(output);
-        					}
-	        			}
+    
+      			for (i=0;i<sizeof(ws)/sizeof(ws[0]) && read_weather && rv==0;i++)
+      			{	
+      				if (ws[i].user==NULL || ws[i].pass==NULL) continue;	// Skip if service is not in use
+      					
+      				if (!ws[i].resend && curpos!=endpos) continue;		// Skip if service doesn't support data resend
+      				
+    				 	l = strlen(ws[i].url)+100+strlen(ws[i].user);
+    					if (ws[i].md5==1) l+=MD5_DIGEST_LENGTH; else l+=strlen(ws[i].pass);
+    					
+    					output=malloc(l);
+    					if (!output)
+    					{	logger(LOG_ERROR,"main","Could not allocate %d bytes for output",l);
+    						rv=1;
+    					}
+    					else
+    					{
+    						if (ws[i].md5==1)
+    						{	MD5(ws[i].pass, strlen(ws[i].pass), md5);
+    							sprintf(md5str, "%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x%02x", md5[0],md5[1],md5[2],md5[3],md5[4],md5[5],md5[6],md5[7], md5[8],md5[9],md5[10],md5[11],md5[12],md5[13],md5[14],md5[15]);
+    						}
+    
+    						rv=ws_format(ws[i].url,output,1,ws[i].user,ws[i].md5==1? md5str : ws[i].pass, ws[i].error);
+    						if (rv!=0) 
+    							logger(LOG_ERROR,"main","Error formatting data return code %d", rv);
+    						else
+    						{	logger(LOG_DEBUG,"main","Submitting to server URL: %s", output);
+    							rv=ws_submit(output,&filebuf); 
+    							// NB: Error in ws_submit will be ignored, just put warning, don't stop
+    							if (rv!=0) 
+    							{	logger(LOG_WARNING,"main","Submitting to server %s failed", output);
+    								rv=0;
+    							}
+    						}
+    						free(output);
+    					}
+      			}
 
 // Save the previous record to w1
-	        			
-	        			w1=w;
+      			
+      			w1=w;
 
-        			}
+    			}
 
 // Position loop ends here
 
 
 // NB: only last position (endpos) record will be put to fhem.txt and submitted to additional URLs        
-        
+    
 // Format and print data for FHEM into FHEM_file
-        
-      				if (rv==0 && FHEM_format!=NULL && FHEM_file!=NULL)
-      				{	output=malloc(strlen(FHEM_format)+100);
-      					if (!output)
-      					{	logger(LOG_ERROR,"main","Could not allocate %u bytes for FHEM output",strlen(FHEM_format)+100);
-      						rv=1;
-      					}
-      					else
-      					{	rv=ws_format(FHEM_format,output,0,"","",FHEM_errorstring);
-      						if (rv!=0)
-      							logger(LOG_ERROR,"main","Error FHEM formatting data return code %d", rv);
-      						else
-      						{	fd = fopen (FHEM_file, "w");
-      							if (fd == NULL)
-      								logger(LOG_ERROR,"main","Error opening FHEM_File %s for writing", FHEM_file);
-      							else
-      							{ logger(LOG_DEBUG,"main","Writing to FHEM file %s", FHEM_file);
-      								fprintf(fd,"%s",output);
-      								fclose(fd);
-      							}
-      						}
-      						free(output);
-      					}
-      				}
+    
+  				if (rv==0 && read_fhem && FHEM_format!=NULL && FHEM_file!=NULL)
+  				{	output=malloc(strlen(FHEM_format)+100);
+  					if (!output)
+  					{	logger(LOG_ERROR,"main","Could not allocate %u bytes for FHEM output",strlen(FHEM_format)+100);
+  						rv=1;
+  					}
+  					else
+  					{	rv=ws_format(FHEM_format,output,0,"","",FHEM_errorstring);
+  						if (rv!=0)
+  							logger(LOG_ERROR,"main","Error FHEM formatting data return code %d", rv);
+  						else
+  						{	fd = fopen (FHEM_file, "w");
+  							if (fd == NULL)
+  								logger(LOG_ERROR,"main","Error opening FHEM_File %s for writing", FHEM_file);
+  							else
+  							{ logger(LOG_DEBUG,"main","Writing to FHEM file %s", FHEM_file);
+  								fprintf(fd,"%s",output);
+  								fclose(fd);
+  							}
+  						}
+  						free(output);
+  					}
+  				}
 
-        
+    
 // Format and submit data to additional URLs according to -u or WeatherURL cfg
-        
-        			for (i=0;i<add_url_counter && rv==0;i++)
-        			{
-        				if (add_url[i]!=NULL)
-        				{	output=malloc(strlen(add_url[i])+100);
-        					if (!output)
-        					{	logger(LOG_ERROR,"main","Could not allocate %u bytes for output",strlen(add_url[i])+100);
-        						rv=1;
-        					}
-        					else
-        					{	rv=ws_format(add_url[i],output,1,"","","");
-        						if (rv!=0)
-        							logger(LOG_ERROR,"main","Error formatting data return code %d", rv);
-        						else
-        						{	logger(LOG_DEBUG,"main","Submitting to additional URL: %s", output);
-        							rv=ws_submit(output,&filebuf); 
-        							// NB: Error in ws_submit will be ignored, just warning
-        							if (rv!=0) 
-        							{	logger(LOG_WARNING,"main","Submitting to server %s failed", output);
-        								rv=0;
-        							}
-        						}
-							free(output);
-        					}
-        				}
-        			}
+    
+    			for (i=0;i<add_url_counter && read_weather && rv==0;i++)
+    			{
+    				if (add_url[i]!=NULL)
+    				{	output=malloc(strlen(add_url[i])+100);
+    					if (!output)
+    					{	logger(LOG_ERROR,"main","Could not allocate %u bytes for output",strlen(add_url[i])+100);
+    						rv=1;
+    					}
+    					else
+    					{	rv=ws_format(add_url[i],output,1,"","","");
+    						if (rv!=0)
+    							logger(LOG_ERROR,"main","Error formatting data return code %d", rv);
+    						else
+    						{	logger(LOG_DEBUG,"main","Submitting to additional URL: %s", output);
+    							rv=ws_submit(output,&filebuf); 
+    							// NB: Error in ws_submit will be ignored, just warning
+    							if (rv!=0) 
+    							{	logger(LOG_WARNING,"main","Submitting to server %s failed", output);
+    								rv=0;
+    							}
+    						}
+					free(output);
+    					}
+    				}
+    			}
 			}
 
 // Make a pause
@@ -855,12 +865,19 @@ int main(int argc, char **argv)
 			{	
 				gettimeofday(&tact, NULL);
 				
-				pause = run_interval*1000000 - diff_time(&tact, &tlast);
-				if (pause > 0 && pause <= run_interval*1000000)
-				{
-					logger(LOG_DEBUG,"main","Sleeping until next run %d microseconds\n", pause);
-					usleep(pause);
+				while (run_interval*1000000 > diff_time(&tact, &tlast) && fhem_interval*1000000 > diff_time(&tact, &tlastfhem))
+				{	logger(LOG_DEBUG,"main","Sleeping a second prior to the next timers check");
+					sleep(1);
+					gettimeofday(&tact, NULL);
 				}
+					
+			  read_weather=read_fhem=0;
+			  
+				if (run_interval*1000000 <= diff_time(&tact, &tlast))
+					read_weather=1;
+			  if (fhem_interval*1000000 <= diff_time(&tact, &tlastfhem))
+			  	read_fhem=1;
+				
 			}
 			
 		} while (run_interval>0);
