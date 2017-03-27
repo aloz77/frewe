@@ -63,6 +63,7 @@
  * 2015-04-24 Handle lasttime as UTC
  * 2015-08-20 Don't write fhem.txt for older records
  * 2016-01-16 Separate read interval for fhem.txt, run each 48 seconds for FHEM
+ * 2017-03-27 Calculated Outside Humidity can be a maximum of 100 Percent
 
  * TODO: Handle rain counter overflow
  */
@@ -1442,7 +1443,7 @@ int ws_parse(uint8_t *buffer, uint8_t *buffer60, uint8_t *buffer0h, time_t curti
 	{	w.humout = floor((float)buffer[0x04]*c.humout_factor+c.humout_offset);
 		if ((w.humout > 100) || (w.humout == 0)) 
 		{	logger(LOG_ERROR,"ws_parse","Humidity outside out of range: %d %%",w.humout);
-			errcount++;
+			w.humout=100;
 		}
 	}
 	else
