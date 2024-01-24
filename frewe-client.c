@@ -5,7 +5,7 @@
  * Adam Pribyl (covex@lowlevel.cz)
  * Bradley Jarvis (bradley.jarvis@dcsi.net.au)
  * Lukas Zvonar (lukic@mag-net.sk)
- * Petr Zitny (petr@zitny.net)
+ *Â Petr Zitny (petr@zitny.net)
  * Alexey Ozerov (alexey@ozerov.de)
  * 2011-12-20 some code cleaning and restructure, read_period, km/h wind speed
  * 2011-12-21 introduce ws_parse(), struct wrecord
@@ -47,7 +47,7 @@
  * 2012-06-13 Include age of last record last_age in record datetime, pos60 and pos0h calculation, fix rainday calculation for old records
  * 2012-06-15 Ignore get lasttime errors if frewe-server is not available
  * 2012-07-27 make unit conversions in ws_format() instead of ws_parse()
- * 2012-07-27 WH3080: Transmit illumination in W/m² instead of Lux to WUnderground, PWS, Awekas, METOffice
+ * 2012-07-27 WH3080: Transmit illumination in W/mÂ² instead of Lux to WUnderground, PWS, Awekas, METOffice
  * 2012-09-01 Remove Wetterpool.de, add Wetternetz Sachsen
  * 2013-03-16 Remove Sauerlandwetter, rename time_interval to read_period, increase http timeout to 15 sec, print version info with -H
  * 2013-03-16 Trying to fix double submissions with -59 logical seconds, later changed back to -1
@@ -64,6 +64,7 @@
  * 2015-08-20 Don't write fhem.txt for older records
  * 2016-01-16 Separate read interval for fhem.txt, run each 48 seconds for FHEM
  * 2017-03-27 Calculated Outside Humidity can be a maximum of 100 Percent
+ * 2024-01-24 Awekas URL
 
  * TODO: Handle rain counter overflow
  */
@@ -184,7 +185,7 @@ struct wservice
 } ws[] =
 {	{ "Weather Underground", "WUnderground_StationID", "WUnderground_Password", "http://weatherstation.wunderground.com/weatherstation/updateweatherstation.php?action=updateraw&ID=%x&PASSWORD=%X&dateutc=%n&winddir=%d&windspeedmph=%w&windgustmph=%g&humidity=%H&tempf=%o&dewptf=%e&baromin=%l&indoortempf=%i&indoorhumidity=%h&rainin=%s&dailyrainin=%t&solarradiation=%m&UV=%U&softwaretype=Freetz%%20Weather", NULL, NULL, 0, "", 1},
 	{ "PWS Weather", "PWSWeather_StationID", "PWSWeather_Password", "http://www.pwsweather.com/pwsupdate/pwsupdate.php?action=updateraw&ID=%x&PASSWORD=%X&dateutc=%n&winddir=%d&windspeedmph=%w&windgustmph=%g&humidity=%H&tempf=%o&dewptf=%e&baromin=%l&indoortempf=%i&indoorhumidity=%h&rainin=%s&dailyrainin=%t&solarradiation=%m&UV=%U&softwaretype=Freetz%%20Weather%%20on%%20%K", NULL, NULL, 0, "", 0},
-	{ "Awekas", "Awekas_Username", "Awekas_Password", "http://www.awekas.at/extern/eingabe_pruefung.php?val=%x;%X;%Y;%Z;%O;%H;%L;%T;%W;%d;;;;de;;%G;%m;%U;;;;%S;", NULL, NULL, 1, "", 0},
+	{ "Awekas", "Awekas_Username", "Awekas_Password", "https://data.awekas.at/eingabe_pruefung.php?val=%x;%X;%Y;%Z;%O;%H;%L;%T;%W;%d;;;;de;;%G;%m;%U;;;;%S;", NULL, NULL, 1, "", 0},
 	{ "MET Office", "METOffice_SiteID", "METOffice_SiteAuthKey", "http://wow.metoffice.gov.uk/automaticreading?siteid=%x&siteAuthenticationKey=%X&dateutc=%n&winddir=%d&windspeedmph=%w&windgustmph=%g&humidity=%H&tempf=%o&dewptf=%e&baromin=%l&indoortempf=%i&indoorhumidity=%h&rainin=%s&dailyrainin=%t&solarradiation=%m&UV=%U&softwaretype=Freetz%%20Weather%%20on%%20%K", NULL, NULL, 0, "", 1},
 //	{ "Wetternetz Sachsen", "WetternetzSachsen_UserID", "WetternetzSachsen_Password", "http://www.wetternetz-sachsen.de/get_daten_20.php?var=%x;%X;V2.0;%K;%Z;%Y;%O;--;--;--;--;--;%H;%E;--;--;--;--;--;--;--;%S;--;--;--;--;%T;--;%W;%d;%G;--;--;--;--;--;--;--;--;--;%C;--;--;%L;%P;--;--;--;--;--;--;--;--;--;--;--;--;--;--;%m;--;--;%U;--;%M;--;--;--;--;--;--;--;--;--;--;--;--;--;--;--;--;%R;--;--;--;--;--;--;--;--;--;--;--;--;--", NULL, NULL, 0, "", 0},
 	{ "Wetternetz Sachsen", "WetternetzSachsen_UserID", "WetternetzSachsen_Password", "http://www.wetternetz-sachsen.de/get_daten_21.php?var=%x;%X;V2.1;FreetzW;%Z;%Y;-2;%O;--;--;--;--;--;%H;--;--;%S;--;--;--;%W;%d;%G;--;--;--;--;--;%C;--;--;%L;%P;--;--;--;--;--;--;--;%m;--;--;%U;--;--;--;--;--;--;--;--;--;--;--;--;--;--;--;--;--;--;--;--;--;", NULL, NULL, 0, "", 0},
@@ -411,7 +412,7 @@ int main(int argc, char **argv)
 				printf("    %%K - weather station type\n");
 				printf("    %%L - relative pressure in hPa\n");
 				printf("    %%l - relative pressure in inch\n");
-				printf("    %%m - illumination in W/m² (WH3080 only)\n");
+				printf("    %%m - illumination in W/mÂ² (WH3080 only)\n");
 				printf("    %%M - illumination in lux (WH3080 only)\n");
 				printf("    %%N - date/time string YYYY-MM-DD HH:MM:SS local time\n");
 				printf("    %%n - date/time string YYYY-MM-DD HH:MM:SS UTC time\n");
@@ -1400,7 +1401,7 @@ int ws_parse(uint8_t *buffer, uint8_t *buffer60, uint8_t *buffer0h, time_t curti
 		sensorlost=1;
 	}
 
-// Inside Temperature (°C)
+// Inside Temperature (Â°C)
 
 	if (buffer[0x03] >= 0x80) tempi=buffer[0x02]+(buffer[0x03]<<8) ^ 0x7FFF;	//weather station uses top bit for sign and not normal
                            else   tempi=buffer[0x02]+(buffer[0x03]<<8) ^ 0x0000;	//signed short, so we need to correct this with xor
@@ -1411,7 +1412,7 @@ int ws_parse(uint8_t *buffer, uint8_t *buffer60, uint8_t *buffer0h, time_t curti
 		errcount++;
 	}
 
-// Outside Temperature (°C)
+// Outside Temperature (Â°C)
 
 	if (!sensorlost)
 	{
@@ -1449,7 +1450,7 @@ int ws_parse(uint8_t *buffer, uint8_t *buffer60, uint8_t *buffer0h, time_t curti
 	else
 		w.humout=255;
 
-// Dew point (°C)
+// Dew point (Â°C)
 
 	if (w.tempout<100 && w.tempout>-100 && w.humout <= 100 && w.humout>0)
 	{	float gama = (17.271*w.tempout)/(237.7+w.tempout) + log ((w.humout==0)?0.001:(float)w.humout/100);		//gama=aT/(b+T) + ln (RH/100)
@@ -1488,7 +1489,7 @@ int ws_parse(uint8_t *buffer, uint8_t *buffer60, uint8_t *buffer0h, time_t curti
 	{      w.windgust=(float)(buffer[0x0A])/10*3.6*c.windgust_factor+c.windgust_offset;
 	}
 
-// Windchill temperature (°C)
+// Windchill temperature (Â°C)
 
 	if (w.tempout<100 && w.tempout>-100 && w.windspeed!=-1)
 	{	if (w.tempout<10.0)
@@ -1893,7 +1894,7 @@ int ws_format(char *format, char *out, unsigned char urlencode, char *user, char
 						sprintf(out,"%s%0.2f",out,hpa2in(w.pressrel));
 					break;
 
-				case 'm': // illumination in W/m²
+				case 'm': // illumination in W/mÂ²
 					if (w.illu==-1)
 						strcatenc(out,error,urlencode);
 					else
